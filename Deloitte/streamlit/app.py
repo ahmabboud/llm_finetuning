@@ -1,116 +1,143 @@
-# https://cheshirecat.ai/local-models-with-ollama/
-# import gradio as gr
+import gradio as gr
 import os
-import requests
-from llama_cpp import Llama
+import spaces
+from transformers import GemmaTokenizer, AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+from threading import Thread
 
-llm_name = "Deloitte/fintuned/llama-3-8b-chat-doctor.gguf"
-# llm_path = os.path.basename(llm_name)
+# Set an environment variable
+HF_TOKEN = os.environ.get("HF_TOKEN", None)
 
-# gguf_model = "Q4_K_M.gguf" # "Q6_K.gguf" 
 
-# # download gguf model
-# def download_llms(llm_name):
-#     """Download GGUF model"""
-#     download_url = ""
-#     print("Downloading " + llm_name)
-#     download_url = f"https://huggingface.co/MuntasirHossain/Meta-Llama-3-8B-OpenOrca-GGUF/resolve/main/{gguf_model}"
+DESCRIPTION = '''
+<div>
+<h1 style="text-align: center;">Meta Llama3 8B</h1>
+<p>This Space demonstrates the instruction-tuned model <a href="https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct"><b>Meta Llama3 8b Chat</b></a>. Meta Llama3 is the new open LLM and comes in two sizes: 8b and 70b. Feel free to play with it, or duplicate to run privately!</p>
+<p>🔎 For more details about the Llama3 release and how to use the model with <code>transformers</code>, take a look <a href="https://huggingface.co/blog/llama3">at our blog post</a>.</p>
+<p>🦕 Looking for an even more powerful model? Check out the <a href="https://huggingface.co/chat/"><b>Hugging Chat</b></a> integration for Meta Llama 3 70b</p>
+</div>
+'''
 
-#     if not os.path.exists("model"):
-#         os.makedirs("model")
+LICENSE = """
+<p/>
+---
+Built with Meta Llama 3
+"""
+
+PLACEHOLDER = """
+<div style="padding: 30px; text-align: center; display: flex; flex-direction: column; align-items: center;">
+   <img src="https://ysharma-dummy-chat-app.hf.space/file=/tmp/gradio/8e75e61cc9bab22b7ce3dec85ab0e6db1da5d107/Meta_lockup_positive%20primary_RGB.jpg" style="width: 80%; max-width: 550px; height: auto; opacity: 0.55;  "> 
+   <h1 style="font-size: 28px; margin-bottom: 2px; opacity: 0.55;">Meta llama3</h1>
+   <p style="font-size: 18px; margin-bottom: 2px; opacity: 0.65;">Ask me anything...</p>
+</div>
+"""
+
+
+css = """
+h1 {
+  text-align: center;
+  display: block;
+}
+#duplicate-button {
+  margin: auto;
+  color: white;
+  background: #1565c0;
+  border-radius: 100vh;
+}
+"""
+
+# Load the tokenizer and model
+tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B-Instruct")
+model = AutoModelForCausalLM.from_pretrained("meta-llama/Meta-Llama-3-8B-Instruct", device_map="auto")  # to("cuda:0") 
+terminators = [
+    tokenizer.eos_token_id,
+    tokenizer.convert_tokens_to_ids("<|eot_id|>")
+]
+
+@spaces.GPU(duration=120)
+def chat_llama3_8b(message: str, 
+              history: list, 
+              temperature: float, 
+              max_new_tokens: int
+             ) -> str:
+    """
+    Generate a streaming response using the llama3-8b model.
+    Args:
+        message (str): The input message.
+        history (list): The conversation history used by ChatInterface.
+        temperature (float): The temperature for generating the response.
+        max_new_tokens (int): The maximum number of new tokens to generate.
+    Returns:
+        str: The generated response.
+    """
+    conversation = []
+    for user, assistant in history:
+        conversation.extend([{"role": "user", "content": user}, {"role": "assistant", "content": assistant}])
+    conversation.append({"role": "user", "content": message})
+
+    input_ids = tokenizer.apply_chat_template(conversation, return_tensors="pt").to(model.device)
     
-#     llm_filename = os.path.basename(download_url)
-#     llm_temp_file_path = os.path.join("model", llm_filename)
+    streamer = TextIteratorStreamer(tokenizer, timeout=10.0, skip_prompt=True, skip_special_tokens=True)
 
-#     if os.path.exists(llm_temp_file_path):
-#         print("Model already available")
-#     else:
-#         response = requests.get(download_url, stream=True)
-#         if response.status_code == 200:
-#             with open(llm_temp_file_path, 'wb') as f:
-#                 for chunk in response.iter_content(chunk_size=1024):
-#                     if chunk:
-#                         f.write(chunk)
-            
-#             print("Download completed")
-#         else:
-#             print(f"Model download unsuccessful {response.status_code}")
-
-
-# # define model pipeline with llama-cpp
-# def initialize_llm(llm_model): 
-#     model_path = ""
-#     if llm_model == llm_name:
-#         model_path = f"model/{gguf_model}"
-#         download_llms(llm_model)
-#     llm = Llama(
-#         model_path=model_path,
-#         n_ctx=1024, # input text context length, 0 = from model
-#         n_threads=2,
-#         verbose=False
-#         )
-#     return llm
-    
-llm = Llama(
-        model_path=llm_name,
-        n_ctx=1024, # input text context length, 0 = from model
-        n_threads=2,
-        verbose=False
-        )
-
-# format prompt as per the ChatML template. The model was fine-tuned with this chat template 
-def format_prompt(input_text, history):
-    system_prompt = """You are an expert and  helpful AI assistant. You are truthful and constructive in your response for real-world matters 
-    but you are also creative for imaginative/fictional tasks."""
-    prompt = ""
-    if history:
-        for previous_prompt, response in history:
-            prompt += f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{previous_prompt}<|im_end|>\n<|im_start|>assistant\n{response}<|im_end|>"
-    prompt += f"<|im_start|>system\n{system_prompt}<|im_end|>\n<|im_start|>user\n{input_text}<|im_end|>\n<|im_start|>assistant"
-    return prompt
-
-# generate llm response
-def generate(prompt, history, max_new_tokens=512): # temperature=0.95, top_p=0.9
-    if not history:
-        history = []
-
-    # temperature = float(temperature)
-    # top_p = float(top_p)
-
-    kwargs = dict(
-        # temperature=temperature,
-        max_tokens=max_new_tokens,
-        # top_p=top_p,
-        stop=["<|im_end|>"]
+    generate_kwargs = dict(
+        input_ids= input_ids,
+        streamer=streamer,
+        max_new_tokens=max_new_tokens,
+        do_sample=True,
+        temperature=temperature,
+        eos_token_id=terminators,
     )
+    # This will enforce greedy generation (do_sample=False) when the temperature is passed 0, avoiding the crash.             
+    if temperature == 0:
+        generate_kwargs['do_sample'] = False
+        
+    t = Thread(target=model.generate, kwargs=generate_kwargs)
+    t.start()
 
-    formatted_prompt = format_prompt(prompt, history)
+    outputs = []
+    for text in streamer:
+        outputs.append(text)
+        #print(outputs)
+        yield "".join(outputs)
+        
 
-    # generate a streaming response 
-    response = llm(formatted_prompt, **kwargs, stream=True)
-    output = ""
-    for chunk in response:
-        output += chunk['choices'][0]['text']
-        yield output
-    return output
+# Gradio block
+chatbot=gr.Chatbot(height=450, placeholder=PLACEHOLDER, label='Gradio ChatInterface')
 
-    # # generate response without streaming
-    # response = llm(formatted_prompt, **kwargs)
-    # return response['choices'][0]['text']
-
-chatbot = gr.Chatbot(height=500)
-with gr.Blocks(theme=gr.themes.Default(primary_hue="sky")) as demo:
-    gr.HTML("<center><h1>Fine-tuned Meta-Llama-3-8B Chatbot</h1><center>")
-    gr.Markdown("This AI agent is using the MuntasirHossain/Meta-Llama-3-8B-OpenOrca-GGUF model for text-generation. <b>Note</b>: The app is running on a free basic CPU hosted on Hugging Facce Hub. Responses may be slow!")
+with gr.Blocks(fill_height=True, css=css) as demo:
+    
+    gr.Markdown(DESCRIPTION)
+    gr.DuplicateButton(value="Duplicate Space for private use", elem_id="duplicate-button")
     gr.ChatInterface(
-        generate,
-        chatbot=chatbot,  
-        retry_btn=None,
-        undo_btn=None,
-        clear_btn="Clear",
-        # description="This AI agent is using the MuntasirHossain/Meta-Llama-3-8B-OpenOrca-GGUF model for text-generation.",
-        # additional_inputs=additional_inputs,
-        examples=[["What is code vulnerability and how can Generative AI help to address code vulnerability?"], 
-                  ["Imagine there is a planet named 'Orca' where life exists and the dominant species of the inhabitants are mysterious human-like intelligence. Write a short fictional story about the survival of this dominant species in the planet's extreme conditions. Use your imagination and creativity to set the plot of the story. Keep the story within 500 words."]]
-    )
-demo.queue().launch()
+        fn=chat_llama3_8b,
+        chatbot=chatbot,
+        fill_height=True,
+        additional_inputs_accordion=gr.Accordion(label="⚙️ Parameters", open=False, render=False),
+        additional_inputs=[
+            gr.Slider(minimum=0,
+                      maximum=1, 
+                      step=0.1,
+                      value=0.95, 
+                      label="Temperature", 
+                      render=False),
+            gr.Slider(minimum=128, 
+                      maximum=4096,
+                      step=1,
+                      value=512, 
+                      label="Max new tokens", 
+                      render=False ),
+            ],
+        examples=[
+            ['How to setup a human base on Mars? Give short answer.'],
+            ['Explain theory of relativity to me like I’m 8 years old.'],
+            ['What is 9,000 * 9,000?'],
+            ['Write a pun-filled happy birthday message to my friend Alex.'],
+            ['Justify why a penguin might make a good king of the jungle.']
+            ],
+        cache_examples=False,
+                     )
+    
+    gr.Markdown(LICENSE)
+    
+if __name__ == "__main__":
+    demo.launch()
