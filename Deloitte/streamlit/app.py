@@ -1,89 +1,149 @@
-# !pip install -qq langchain wget llama-index cohere
-# !pip install --upgrade --force-reinstall --no-cache-dir llama-cpp-python
-# %pip install llama-index-embeddings-huggingface
-# %pip install llama-index-llms-llama-cpp
-# import wget 
 
-# def bar_custom(current, total, width=80):
-#     print("Downloading %d%% [%d / %d] bytes" % (current / total * 100, current, total))
-
-
-
-# !pip -q install streamlit
-
-# %%writefile app.py
-import streamlit as st 
+#ref: https://huggingface.co/spaces/ysharma/Chat_with_Meta_llama3_8b/blob/main/app.py
+import gradio as gr
 import os
-# from llama_index import (
-#   SimpleDirectoryReader,
-#   VectorStoreIndex,
-#   ServiceContext,
-# )
-from llama_index.llms.llama_cpp import LlamaCPP
-from llama_index.llms.llama_cpp.llama_utils import (
-    messages_to_prompt,
-    completion_to_prompt,
-)
-from langchain.schema import(SystemMessage, HumanMessage, AIMessage)
+# import spaces
+from transformers import GemmaTokenizer, AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+from threading import Thread
+import torch
+# Set an environment variable
+# HF_TOKEN = os.environ.get("HF_TOKEN", None)
+
+
+DESCRIPTION = '''
+<div>
+<h1 style="text-align: center;"> Mental Health Assistant Bot</h1>
+<p>Meet MindMate, your compassionate and intelligent mental health assistant bot, designed to support your well-being and help you navigate the complexities of mental health. MindMate is here to offer personalized recommendations, activities, and resources to promote a healthier, happier you.</p>
+
+</div>
+'''
+
+LICENSE = """
+<p/>
+---
+Built with Meta Llama 3
+"""
+
+PLACEHOLDER = """
+<div style="padding: 30px; text-align: center; display: flex; flex-direction: column; align-items: center;">
+   <h1 style="font-size: 28px; margin-bottom: 2px; opacity: 0.55;">Mental Health Assistant Bot</h1>
+   <p style="font-size: 18px; margin-bottom: 2px; opacity: 0.65;">Tell me what you are feeling...</p>
+</div>
+"""
+
+
+css = """
+h1 {
+  text-align: center;
+  display: block;
+}
+#duplicate-button {
+  margin: auto;
+  color: white;
+  background: #1565c0;
+  border-radius: 100vh;
+}
+"""
+shared_space="/fs01/projects/fta_teams/deloitte"
+merged_model= f"{shared_space}/merged_models/llama-3-8b-chat-doctor-merged-shyana-v1"
 os.chdir("../../../../../../")
-os.chdir("/fs01/home/ws_aabboud/finetuning-and-alignment/Deloitte/finetuned/")
-def init_page() -> None:
-  st.set_page_config(
-    page_title="Personal Chatbot"
-  )
-  st.header("Persoanl Chatbot")
-  st.sidebar.title("Options")
+# Load the tokenizer and model
+tokenizer = AutoTokenizer.from_pretrained(merged_model)
+model = AutoModelForCausalLM.from_pretrained(merged_model, device_map="auto")
+terminators = [
+    tokenizer.eos_token_id,
+    tokenizer.convert_tokens_to_ids("<|eot_id|>")
+]
 
-def select_llm() -> LlamaCPP:
-  return LlamaCPP(
-    model_path="models/llama-3-8b-chat-doctor.gguf",
-    temperature=0.1,
-    max_new_tokens=500,
-    context_window=3900,
-    generate_kwargs={},
-    model_kwargs={"n_gpu_layers":1},
-    messages_to_prompt=messages_to_prompt,
-    completion_to_prompt=completion_to_prompt,
-    verbose=True,
-  )
+# @spaces.GPU(duration=120)
+def chat_llama3_8b(message: str, 
+              history: list, 
+              temperature: float, 
+              max_new_tokens: int
+             ) -> str:
+    """
+    Generate a streaming response using the llama3-8b model.
+    Args:
+        message (str): The input message.
+        history (list): The conversation history used by ChatInterface.
+        temperature (float): The temperature for generating the response.
+        max_new_tokens (int): The maximum number of new tokens to generate.
+    Returns:
+        str: The generated response.
+    """
+    conversation = []
+    for user, assistant in history:
+        conversation.extend([{"role": "user", "content": user}, {"role": "assistant", "content": assistant}])
+    conversation.append({"role": "user", "content": message})
 
-def init_messages() -> None:
-  clear_button = st.sidebar.button("Clear Conversation", key="clear")
-  if clear_button or "messages" not in st.session_state:
-    st.session_state.messages = [
-      SystemMessage(
-        content="you are a helpful AI assistant. Reply your answer in markdown format."
-      )
-    ]
-
-def get_answer(llm, messages) -> str:
-  response = llm.complete(messages)
-  return response.text
-
-def main() -> None:
-  init_page()
-  llm = select_llm()
-  init_messages()
-
-  if user_input := st.chat_input("Input your question!"):
-    st.session_state.messages.append(HumanMessage(content=user_input))
-    with st.spinner("Bot is typing ..."):
-      answer = get_answer(llm, user_input)
-      print(answer)
-    st.session_state.messages.append(AIMessage(content=answer))
+    input_ids = tokenizer.apply_chat_template(conversation, return_tensors="pt").to(model.device)
     
+    streamer = TextIteratorStreamer(tokenizer, timeout=10.0, skip_prompt=True, skip_special_tokens=True)
 
-  messages = st.session_state.get("messages", [])
-  for message in messages:
-    if isinstance(message, AIMessage):
-      with st.chat_message("assistant"):
-        st.markdown(message.content)
-    elif isinstance(message, HumanMessage):
-      with st.chat_message("user"):
-        st.markdown(message.content)
+    generate_kwargs = dict(
+        input_ids= input_ids,
+        streamer=streamer,
+        max_new_tokens=max_new_tokens,
+        do_sample=True,
+        temperature=temperature,
+        eos_token_id=terminators,
+    )
+    # This will enforce greedy generation (do_sample=False) when the temperature is passed 0, avoiding the crash.             
+    if temperature == 0:
+        generate_kwargs['do_sample'] = False
+        
+    t = Thread(target=model.generate, kwargs=generate_kwargs)
+    t.start()
 
+    outputs = []
+    for text in streamer:
+        outputs.append(text)
+        #print(outputs)
+        yield "".join(outputs)
+        
+
+# Gradio block
+chatbot=gr.Chatbot(height=450, placeholder=PLACEHOLDER, label='Gradio ChatInterface')
+
+with gr.Blocks(fill_height=True, css=css) as demo:
+    
+    gr.Markdown(DESCRIPTION)
+    gr.DuplicateButton(value="Duplicate Space for private use", elem_id="duplicate-button")
+    gr.ChatInterface(
+        fn=chat_llama3_8b,
+        chatbot=chatbot,
+        fill_height=True,
+        additional_inputs_accordion=gr.Accordion(label="⚙️ Parameters", open=False, render=False),
+        additional_inputs=[
+            gr.Slider(minimum=0,
+                      maximum=1, 
+                      step=0.1,
+                      value=0.95, 
+                      label="Temperature", 
+                      render=False),
+            gr.Slider(minimum=128, 
+                      maximum=4096,
+                      step=1,
+                      value=512, 
+                      label="Max new tokens", 
+                      render=False ),
+            ],
+        examples=[
+            ["I've been feeling very depressed lately. What can I do to start feeling better?"],
+            ["I have trouble falling asleep and staying asleep. How can I improve my sleep habits?"],
+            ["I'm experiencing a lot of anxiety during the day. What techniques can help me manage this?"],
+            ["I feel overwhelmed by stress at work. What strategies can I use to cope?"],
+            ["I've lost interest in activities I used to enjoy. Is this a normal part of my condition?"],
+            ["I find it difficult to get out of bed and start my day. How can I motivate myself?"],
+            ["I feel like I'm constantly worried about everything. How can I reduce my general anxiety?"],
+            ["I feel like I don't have any control over my life. How can I regain a sense of control?"]
+            ],
+        cache_examples=False,
+                     )
+    
+    gr.Markdown(LICENSE)
+    
 if __name__ == "__main__":
-
-  main()
- 
-# !streamlit run app.py & npx localtunnel --port 8501
+    demo.launch(share=True)
+    
